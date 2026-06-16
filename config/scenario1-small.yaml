@@ -1,0 +1,72 @@
+# ============================================================================
+# 场景一：小型集群 — 10 个工作流、100 个任务
+# 瓶颈：Worker 是瓶颈（执行能力不足）
+# 策略：增加 Worker 实例数量提升执行吞吐，Master 单进程足够
+# ============================================================================
+# 启动方式：1 个 Master + 3~5 个 Worker
+# docker compose 启动示例：
+#   ./master -config config/scenario1-small.yaml &
+#   ./worker -config config/scenario1-small.yaml &
+#   ./worker -config config/scenario1-small.yaml &
+#   ./worker -config config/scenario1-small.yaml &
+# ============================================================================
+
+mysql:
+  host: localhost
+  port: 3306
+  user: root
+  password: root
+  database: vibeflow
+  charset: utf8mb4
+  max_idle: 5
+  max_open: 20
+
+etcd:
+  endpoints: ["localhost:2379"]
+  dial_timeout: "5s"
+  lock_ttl: 10
+
+prefixes:
+  tasks: "/vibeflow/tasks/"
+  heartbeats: "/vibeflow/heartbeats/"
+  workflows: "/vibeflow/workflows/"
+
+# Master 配置：100 并发足够覆盖 10 个工作流 × 每个工作流 10 个任务
+master:
+  http_addr: ":8080"
+  max_concurrent_tasks: 100
+  per_workflow_max_concurrency: 20
+  pending_task_timeout: "5m"
+  shutdown_timeout: "5s"
+  shutdown_delay: "200ms"
+  default_task_timeout: "30s"
+  default_base_backoff: "1s"
+  stale_check_interval: "15s"
+  heartbeat_stale: "15s"
+  store_timeout: "5s"
+  max_history_cache: 500
+  cors_max_age: "12h"
+  ws:
+    read_timeout: "60s"
+    ping_interval: "30s"
+    write_timeout: "10s"
+    max_message_size: 4096
+    broadcast_buffer: 128
+    client_buffer: 32
+
+# Worker 配置：每个 Worker 承担 30~40 并发，3~5 个 Worker 合计覆盖 100+
+worker:
+  id: ""                            # 自动生成唯一 ID
+  heartbeat_interval: "5s"
+  shutdown_delay: "200ms"
+  max_task_concurrency: 40          # 每个 Worker 40 并发，5 个 Worker = 200 并发能力
+
+logger:
+  dir: runtime/log
+  level: info
+
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"
+  service_name: "vibeflow"
+  sample_rate: 0.1                  # 小规模降低采样率

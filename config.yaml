@@ -1,0 +1,62 @@
+mysql:
+  host: localhost
+  port: 3306
+  user: root
+  password: root
+  database: vibeflow
+  charset: utf8mb4
+  max_idle: 10
+  max_open: 100
+
+etcd:
+  endpoints: ["localhost:2379"]
+  dial_timeout: "5s"
+  lock_ttl: 10
+  # tls:
+  #   enabled: true
+  #   cert_file: /path/to/client.pem
+  #   key_file: /path/to/client-key.pem
+  #   ca_file: /path/to/ca.pem
+
+prefixes:
+  tasks: "/vibeflow/tasks/"
+  heartbeats: "/vibeflow/heartbeats/"
+  workflows: "/vibeflow/workflows/"
+
+master:
+  http_addr: ":8080"
+  max_concurrent_tasks: 250
+  per_workflow_max_concurrency: 100
+  pending_task_timeout: "5m"
+  shutdown_timeout: "5s"
+  shutdown_delay: "200ms"
+  default_task_timeout: "30s"
+  default_base_backoff: "1s"
+  stale_check_interval: "15s"
+  heartbeat_stale: "15s"
+  store_timeout: "5s"
+  cors_max_age: "12h"
+  ws:
+    read_timeout: "60s"
+    ping_interval: "30s"
+    write_timeout: "10s"
+    max_message_size: 4096
+    broadcast_buffer: 256
+    client_buffer: 64
+
+logger:
+  dir: runtime/log
+  level: info
+
+worker:
+  id: ""
+  heartbeat_interval: "5s"
+  shutdown_delay: "200ms"
+  max_task_concurrency: 100
+
+# tracing 链路追踪配置（可选，不配置不影响程序运行）
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"       # OTLP gRPC 接收端（Jaeger all-in-one）
+  service_name: "vibeflow"         # 服务名称，在 Jaeger UI 中显示
+  sample_rate: 1.0                 # 采样率 0.0-1.0，1.0=全量采集

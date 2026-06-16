@@ -1,0 +1,496 @@
+{%define "workflows.html"%}
+{%template "header" .%}
+<main class="max-w-7xl mx-auto px-4 sm:px-6 py-6" id="app">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-xl font-bold text-gray-800">工作流</h1>
+      <p class="text-sm text-gray-500 mt-1">管理工作流的创建、执行、停止和重试 <span v-if="wsConnected" class="text-green-500">● 实时</span><span v-else class="text-gray-400">○ 离线</span></p>
+    </div>
+    <button @click="showForm = !showForm" class="text-sm bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition font-medium">+ 创建工作流</button>
+  </div>
+
+  <!-- 创建表单 -->
+  <div v-if="showForm" class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-semibold text-gray-700">创建工作流</h2>
+      <div class="flex items-center gap-2 bg-gray-100 rounded-lg p-0.5">
+        <button type="button" @click="formMode = 'form'" :class="formMode === 'form' ? 'bg-white shadow text-gray-800' : 'text-gray-500 hover:text-gray-700'" class="px-3 py-1 text-xs font-medium rounded-md transition">表单</button>
+        <button type="button" @click="formMode = 'json'" :class="formMode === 'json' ? 'bg-white shadow text-gray-800' : 'text-gray-500 hover:text-gray-700'" class="px-3 py-1 text-xs font-medium rounded-md transition">JSON</button>
+      </div>
+    </div>
+    <form v-show="formMode === 'form'" @submit.prevent="createWorkflow" class="space-y-4 max-w-3xl">
+      <div>
+        <label class="block text-sm font-medium text-gray-600 mb-1">工作流名称</label>
+        <input type="text" v-model="form.name" required placeholder="例如：daily-report" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-600 mb-1">触发方式</label>
+          <select v-model="form.trigger" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+            <option value="manual">手动触发</option>
+            <option value="cron">定时触发（Cron）</option>
+          </select>
+        </div>
+        <div v-if="form.trigger === 'cron'">
+          <label class="block text-sm font-medium text-gray-600 mb-1">Cron 表达式</label>
+          <input type="text" v-model="form.cron_expr" placeholder="例如：0 0 8 * * *（每天8点）" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+          <div class="text-xs text-gray-400 mt-1">格式：秒 分 时 日 月 周（6位标准 Cron）</div>
+        </div>
+      </div>
+      <!-- 高级配置 -->
+      <div class="bg-gray-50 rounded-lg p-4">
+        <div class="text-sm font-medium text-gray-600 mb-3">高级配置（可选）</div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">工作流超时(s)</label>
+            <input type="number" v-model.number="form.timeout_sec" placeholder="0=不限制" min="0" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">任务超时(s)</label>
+            <input type="number" v-model.number="form.task_timeout_sec" placeholder="0=不限制" min="0" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">最大重试</label>
+            <input type="number" v-model.number="form.max_retries" placeholder="0" min="0" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">基础退避(s)</label>
+            <input type="number" v-model.number="form.base_backoff" placeholder="0" min="0" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <label class="block text-sm font-medium text-gray-600">任务编排（组间串行 → 组内并行 ∥）</label>
+          <div class="flex gap-2">
+            <button type="button" @click="addTaskGroup" class="text-sm text-indigo-600 hover:text-indigo-800 font-medium">+ 添加任务组</button>
+          </div>
+        </div>
+        <div v-if="form.taskGroups.length === 0" class="text-sm text-gray-400 py-4 text-center border border-dashed border-gray-300 rounded-lg">点击「+ 添加任务组」构建工作流</div>
+        <div v-for="(group, gi) in form.taskGroups" :key="group._id" class="border-2 border-indigo-100 rounded-lg p-4 bg-indigo-50/30 mb-4">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-xs font-bold text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded">组 {{ gi + 1 }}</span>
+            <button type="button" @click="removeTaskGroup(gi)" class="text-xs text-red-500 hover:text-red-700">移除组</button>
+          </div>
+          <div v-for="(row, ri) in group.rows" :key="row._id" class="border border-gray-200 rounded-lg p-3 bg-white mb-2">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs font-medium text-gray-500">
+                <span v-if="group.rows.length > 1">∥ 并行任务 {{ ri + 1 }}</span>
+                <span v-else>任务 {{ ri + 1 }}</span>
+              </span>
+              <button type="button" @click="removeTaskRow(gi, ri)" class="text-xs text-red-400 hover:text-red-600">移除</button>
+            </div>
+            <div class="mb-2">
+              <select v-model="row.task_name" @change="onTaskSelect(row)" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+                <option value="">-- 选择任务 --</option>
+                <option v-for="t in taskTypes" :key="t.name" :value="t.name">{{ t.name }}{{ t.description ? ' (' + t.description + ')' : '' }}</option>
+              </select>
+            </div>
+            <!-- 延迟执行 -->
+            <div class="mb-2 flex items-center gap-2">
+              <label class="text-xs text-gray-500 whitespace-nowrap">延迟(s):</label>
+              <input type="number" v-model.number="row.delay_sec" placeholder="0" min="0" class="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+            </div>
+            <div v-if="row.selectedType && row.selectedType.params && row.selectedType.params.length > 0" class="space-y-2">
+              <div class="text-xs font-medium text-gray-500">任务参数</div>
+              <div v-for="p in row.selectedType.params" :key="p.key">
+                <template v-if="p.type === 'select'">
+                  <label class="block text-xs font-medium text-gray-600 mb-0.5">{{ p.label }}<span v-if="p.required" class="text-red-500"> *</span></label>
+                  <select v-model="row.params[p.key]" :required="p.required" class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+                    <option value="">-- 请选择 --</option>
+                    <option v-for="o in (p.options || [])" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </select>
+                </template>
+                <template v-else-if="p.type === 'textarea'">
+                  <label class="block text-xs font-medium text-gray-600 mb-0.5">{{ p.label }}<span v-if="p.required" class="text-red-500"> *</span></label>
+                  <textarea v-model="row.params[p.key]" :placeholder="p.placeholder || ''" :required="p.required" rows="3" class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"></textarea>
+                </template>
+                <template v-else-if="p.type === 'checkbox'">
+                  <div class="flex items-center gap-2">
+                    <input type="checkbox" v-model="row.params[p.key]" class="rounded border-gray-300">
+                    <label class="text-sm text-gray-700">{{ p.label }}<span v-if="p.required" class="text-red-500"> *</span></label>
+                  </div>
+                </template>
+                <template v-else>
+                  <label class="block text-xs font-medium text-gray-600 mb-0.5">{{ p.label }}<span v-if="p.required" class="text-red-500"> *</span></label>
+                  <input :type="p.type || 'text'" v-model="row.params[p.key]" :placeholder="p.placeholder || ''" :required="p.required" :value="p.default !== null && p.default !== undefined ? p.default : ''" class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+                </template>
+                <div v-if="p.description" class="text-xs text-gray-400 mt-0.5">{{ p.description }}</div>
+              </div>
+            </div>
+          </div>
+          <button type="button" @click="addTaskRowToGroup(gi)" class="text-xs text-indigo-500 hover:text-indigo-700 font-medium mt-1">+ 向此组添加并行任务</button>
+        </div>
+      </div>
+      <div class="flex gap-3">
+        <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-indigo-700 transition">提交工作流</button>
+        <button type="button" @click="showForm = false" class="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-200 transition">取消</button>
+      </div>
+    </form>
+
+    <!-- JSON 预览视图 -->
+    <div v-show="formMode === 'json'" class="space-y-3">
+      <div class="flex items-center gap-2">
+        <button type="button" @click="copyJson" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-600 px-3 py-1.5 rounded-md transition font-medium">复制</button>
+        <span v-if="copied" class="text-xs text-green-600">已复制到剪贴板</span>
+      </div>
+      <pre class="bg-gray-900 text-green-400 rounded-lg p-4 text-xs overflow-x-auto font-mono leading-relaxed">{{ buildJsonPreview() }}</pre>
+      <div class="flex gap-3">
+        <button type="button" @click="submitJson" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-indigo-700 transition">提交工作流</button>
+        <button type="button" @click="showForm = false" class="bg-gray-100 text-gray-600 px-4 py-2 rounded-lg text-sm hover:bg-gray-200 transition">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 工作流列表 -->
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-lg font-semibold text-gray-700">所有工作流</h2>
+    </div>
+
+    <div v-if="workflows.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-200 px-5 py-12 text-center text-gray-400">
+      <div class="text-4xl mb-3">⎔</div>
+      <p class="text-sm">暂无工作流</p>
+      <p class="text-xs mt-1">点击上方「创建工作流」开始使用</p>
+    </div>
+
+    <div v-else class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+          <tr>
+            <th class="text-left px-5 py-3 font-medium">名称</th>
+            <th class="text-left px-5 py-3 font-medium">UUID</th>
+            <th class="text-left px-5 py-3 font-medium">触发方式</th>
+            <th class="text-left px-5 py-3 font-medium">状态</th>
+            <th class="text-left px-5 py-3 font-medium">任务数</th>
+            <th class="text-left px-5 py-3 font-medium">开始时间</th>
+            <th class="text-left px-5 py-3 font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          <tr v-for="s in workflows" :key="s.workflow.uuid" class="hover:bg-gray-50 transition">
+            <td class="px-5 py-3">
+              <a :href="'/workflows/' + encodeURIComponent(s.workflow.uuid)" class="font-medium text-indigo-600 hover:text-indigo-800">{{ s.workflow.name }}</a>
+            </td>
+            <td class="px-5 py-3 text-xs text-gray-400 font-mono max-w-[160px] truncate" :title="s.workflow.uuid">{{ s.workflow.uuid }}</td>
+            <td class="px-5 py-3">
+              <span v-if="s.workflow.trigger === 'cron'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700" :title="s.workflow.cron_expr">定时 {{ s.workflow.cron_expr }}</span>
+              <span v-else class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">手动</span>
+            </td>
+            <td class="px-5 py-3">
+              <span v-if="s.status === 'PENDING'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">待执行</span>
+              <span v-else-if="s.status === 'RUNNING'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">运行中</span>
+              <span v-else-if="s.status === 'PAUSED'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">审批中</span>
+              <span v-else-if="s.status === 'ROLLING_BACK'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">回滚中</span>
+              <span v-else-if="s.status === 'ROLLED_BACK'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">已回滚</span>
+              <span v-else-if="s.status === 'COMPLETED'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">已完成</span>
+              <span v-else class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">失败</span>
+            </td>
+            <td class="px-5 py-3 text-gray-600">{{ taskCount(s) }}</td>
+            <td class="px-5 py-3 text-gray-500">{{ s.status === 'PENDING' ? '-' : formatTime(s.started_at) }}</td>
+            <td class="px-5 py-3">
+              <div class="flex items-center gap-2">
+                <a :href="'/workflows/' + encodeURIComponent(s.workflow.uuid)" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">详情</a>
+                <button v-if="s.status === 'RUNNING'" @click="cancelWorkflow(s.workflow.uuid)" class="text-xs text-red-600 hover:text-red-800 font-medium">停止</button>
+                <button v-else-if="s.status === 'PENDING'" @click="runWorkflow(s.workflow.uuid)" class="text-xs text-green-600 hover:text-green-800 font-medium">执行</button>
+                <button v-else @click="retryWorkflow(s.workflow.uuid)" class="text-xs text-amber-600 hover:text-amber-800 font-medium">运行</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const { createApp } = Vue;
+let rowId = 0;
+let groupId = 0;
+createApp({
+  data() {
+    return {
+      showForm: false,
+      formMode: 'form',
+      copied: false,
+      taskTypes: [],
+      workflows: [],
+      ws: null,
+      wsConnected: false,
+      form: {
+        name: '',
+        trigger: 'manual',
+        cron_expr: '',
+        timeout_sec: 0,
+        task_timeout_sec: 0,
+        max_retries: 0,
+        base_backoff: 0,
+        taskGroups: []
+      }
+    };
+  },
+  mounted() {
+    this.loadTaskTypes();
+    this.loadWorkflows();
+    this.connectWS();
+  },
+  beforeUnmount() {
+    if (this.ws) this.ws.close();
+  },
+  methods: {
+    taskCount(s) {
+      const groups = s.workflow.task_groups || [];
+      let count = 0;
+      for (const g of groups) count += g.length;
+      return count;
+    },
+    formatTime(t) {
+      if (!t) return '-';
+      const d = new Date(t);
+      return d.getFullYear() + '-' +
+        String(d.getMonth()+1).padStart(2,'0') + '-' +
+        String(d.getDate()).padStart(2,'0') + ' ' +
+        String(d.getHours()).padStart(2,'0') + ':' +
+        String(d.getMinutes()).padStart(2,'0');
+    },
+    async loadTaskTypes() {
+      try {
+        const res = await fetch('/api/v1/tasks');
+        const json = await res.json();
+        if (json.code === 0 && json.data) this.taskTypes = json.data;
+      } catch (e) { console.error('加载任务类型失败', e); }
+    },
+    async loadWorkflows() {
+      try {
+        const [rRes, hRes] = await Promise.all([
+          fetch('/api/v1/workflows'),
+          fetch('/api/v1/history?page=1&page_size=50')
+        ]);
+        const running = await rRes.json();
+        const history = await hRes.json();
+        const map = new Map();
+        if (running.code === 0 && running.data) {
+          for (const w of running.data) map.set(w.workflow.uuid, w);
+        }
+        if (history.code === 0 && history.data && history.data.list) {
+          for (const w of history.data.list) {
+            const existing = map.get(w.workflow.uuid);
+            if (!existing || existing.status === 'PENDING') {
+              map.set(w.workflow.uuid, w);
+            }
+          }
+        }
+        this.workflows = Array.from(map.values());
+      } catch (e) { console.error('加载工作流列表失败', e); }
+    },
+    connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = proto + '//' + location.host + '/ws';
+      this.ws = new WebSocket(wsUrl);
+      this.ws.onopen = () => { this.wsConnected = true; };
+      this.ws.onclose = () => { this.wsConnected = false; setTimeout(() => this.connectWS(), 3000); };
+      this.ws.onerror = () => { this.wsConnected = false; };
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const wfName = (msg.data && msg.data.workflow) || (typeof msg.data === 'string' ? msg.data : '');
+          switch (msg.type) {
+            case 'workflow_submitted':
+              this.loadWorkflows();
+              showToastInfo('工作流「' + (wfName || '') + '」已提交');
+              break;
+            case 'task_completed':
+              this.loadWorkflows();
+              break;
+            case 'task_failed':
+              this.loadWorkflows();
+              showToastError('任务「' + (msg.data && msg.data.task || '') + '」失败');
+              break;
+            case 'workflow_paused':
+              this.loadWorkflows();
+              showToastWarn('工作流「' + (wfName || '') + '」已暂停');
+              break;
+            case 'workflow_rolling_back':
+              this.loadWorkflows();
+              showToastWarn('工作流「' + (wfName || '') + '」开始回滚');
+              break;
+            case 'workflow_rolled_back':
+              this.loadWorkflows();
+              showToastWarn('工作流「' + (wfName || '') + '」已回滚');
+              break;
+            case 'workflow_completed':
+              this.loadWorkflows();
+              showToastSuccess('工作流「' + (wfName || '') + '」已完成');
+              break;
+            case 'workflow_failed':
+              this.loadWorkflows();
+              showToastError('工作流「' + (wfName || '') + '」执行失败');
+              break;
+            case 'workflow_cancelled':
+              this.loadWorkflows();
+              showToastWarn('工作流「' + (wfName || '') + '」已取消');
+              break;
+            case 'workflow_approved':
+              this.loadWorkflows();
+              showToastSuccess('工作流「' + (wfName || '') + '」审批通过');
+              break;
+            case 'workflow_rejected':
+              this.loadWorkflows();
+              showToastError('工作流「' + (wfName || '') + '」已驳回');
+              break;
+            case 'workflow_rolling_back':
+            case 'workflow_rolled_back':
+              this.loadWorkflows();
+              showToastError('工作流「' + (wfName || '') + '」执行失败，已回滚');
+              break;
+          }
+        } catch (e) {}
+      };
+    },
+    addTaskGroup() {
+      this.form.taskGroups.push({ _id: ++groupId, rows: [{ _id: ++rowId, task_name: '', params: {}, selectedType: null, delay_sec: 0 }] });
+    },
+    removeTaskGroup(gi) {
+      this.form.taskGroups.splice(gi, 1);
+    },
+    addTaskRowToGroup(gi) {
+      this.form.taskGroups[gi].rows.push({ _id: ++rowId, task_name: '', params: {}, selectedType: null, delay_sec: 0 });
+    },
+    removeTaskRow(gi, ri) {
+      const group = this.form.taskGroups[gi];
+      group.rows.splice(ri, 1);
+      if (group.rows.length === 0) this.form.taskGroups.splice(gi, 1);
+    },
+    onTaskSelect(row) {
+      row.selectedType = this.taskTypes.find(t => t.name === row.task_name) || null;
+      row.params = {};
+    },
+    buildBody() {
+      const taskGroups = [];
+      for (const g of this.form.taskGroups) {
+        const nodes = g.rows
+          .filter(r => r.task_name)
+          .map(r => {
+            const node = { name: r.task_name, params: r.params || {} };
+            if (r.delay_sec > 0) node.delay_sec = r.delay_sec;
+            return node;
+          });
+        if (nodes.length > 0) taskGroups.push(nodes);
+      }
+      const body = {
+        name: this.form.name,
+        task_groups: taskGroups,
+        trigger: this.form.trigger
+      };
+      if (this.form.trigger === 'cron') body.cron_expr = this.form.cron_expr || '';
+      if (this.form.timeout_sec > 0) body.timeout_sec = this.form.timeout_sec;
+      if (this.form.task_timeout_sec > 0) body.task_timeout_sec = this.form.task_timeout_sec;
+      if (this.form.max_retries > 0) body.max_retries = this.form.max_retries;
+      if (this.form.base_backoff > 0) body.base_backoff = this.form.base_backoff;
+      return body;
+    },
+    buildJsonPreview() {
+      return JSON.stringify(this.buildBody(), null, 2);
+    },
+    async copyJson() {
+      try {
+        await navigator.clipboard.writeText(this.buildJsonPreview());
+        this.copied = true;
+        setTimeout(() => { this.copied = false; }, 2000);
+      } catch (e) {
+        // fallback
+        const ta = document.createElement('textarea');
+        ta.value = this.buildJsonPreview();
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        this.copied = true;
+        setTimeout(() => { this.copied = false; }, 2000);
+      }
+    },
+    async submitJson() {
+      const body = this.buildBody();
+      if (!body.name) { showToastWarn('请填写工作流名称'); return; }
+      if (body.task_groups.length === 0) { showToastWarn('请至少添加一个任务'); return; }
+      if (body.trigger === 'cron' && !body.cron_expr) { showToastWarn('请填写 Cron 表达式'); return; }
+      try {
+        const res = await fetch('/api/v1/workflows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const json = await res.json();
+        if (json.code === 0) {
+          this.showForm = false;
+          this.formMode = 'form';
+          this.form = { name: '', trigger: 'manual', cron_expr: '', timeout_sec: 0, task_timeout_sec: 0, max_retries: 0, base_backoff: 0, taskGroups: [] };
+          this.loadWorkflows();
+          showToastSuccess('工作流创建成功');
+        } else {
+          showToastError('创建失败: ' + (json.msg || '未知错误'));
+        }
+      } catch (e) { showToastError('提交失败: ' + e); }
+    },
+    async createWorkflow() {
+      const body = this.buildBody();
+      if (!body.name) { showToastWarn('请填写工作流名称'); return; }
+      if (body.task_groups.length === 0) { showToastWarn('请至少添加一个任务'); return; }
+      if (body.trigger === 'cron' && !body.cron_expr) { showToastWarn('请填写 Cron 表达式'); return; }
+
+      try {
+        const res = await fetch('/api/v1/workflows', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const json = await res.json();
+        if (json.code === 0) {
+          this.showForm = false;
+          this.formMode = 'form';
+          this.form = { name: '', trigger: 'manual', cron_expr: '', timeout_sec: 0, task_timeout_sec: 0, max_retries: 0, base_backoff: 0, taskGroups: [] };
+          this.loadWorkflows();
+          showToastSuccess('工作流创建成功');
+        } else {
+          showToastError('创建失败: ' + (json.msg || '未知错误'));
+        }
+      } catch (e) { showToastError('提交失败: ' + e); }
+    },
+    async cancelWorkflow(uuid) {
+      const name = this.workflows.find(w => w.workflow.uuid === uuid)?.workflow?.name || uuid;
+      const ok = await confirmModal('确认停止', '确定要停止工作流「' + name + '」吗？', { confirmDanger: true, confirmText: '停止' });
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(uuid), { method: 'DELETE' });
+        const json = await res.json();
+        if (json.code === 0) { this.loadWorkflows(); showToastSuccess('已停止'); }
+        else showToastError('停止失败: ' + (json.msg || '未知错误'));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    },
+    async retryWorkflow(uuid) {
+      const name = this.workflows.find(w => w.workflow.uuid === uuid)?.workflow?.name || uuid;
+      const ok = await confirmModal('确认重新运行', '确定要重新运行工作流「' + name + '」吗？');
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(uuid) + '/retry', { method: 'POST' });
+        const json = await res.json();
+        if (json.code === 0) { this.loadWorkflows(); showToastSuccess('已重新运行'); }
+        else showToastError('运行失败: ' + (json.msg || '未知错误'));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    },
+    async runWorkflow(uuid) {
+      const name = this.workflows.find(w => w.workflow.uuid === uuid)?.workflow?.name || uuid;
+      const ok = await confirmModal('确认执行', '确定要执行工作流「' + name + '」吗？');
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(uuid) + '/run', { method: 'POST' });
+        const json = await res.json();
+        if (json.code === 0) { this.loadWorkflows(); showToastSuccess('已开始执行'); }
+        else showToastError('执行失败: ' + (json.msg || '未知错误'));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    },
+  }
+}).mount('#app');
+</script>
+{%template "footer" .%}
+{%end%}

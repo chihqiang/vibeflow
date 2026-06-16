@@ -1,0 +1,77 @@
+# ============================================================================
+# 场景三：大型集群 — 1000 个工作流、10000 个并发任务
+# 瓶颈：Worker 空闲等任务（Master 分发能力不足成为瓶颈）
+# 策略：
+#   1. 最大化 Master 并发上限和事件处理缓冲
+#   2. 大量 Worker 分散执行负载
+#   3. 加快心跳检测和 store 超时，快速剔除异常节点
+#   4. MySQL 连接池适当扩大，支撑更多工作流持久化
+# ============================================================================
+# 启动方式：1 个 Master + 20~30 个 Worker
+# 推荐方式：使用 systemd 或 supervisor 管理 Worker 进程
+# 示例：
+#   ./master -config config/scenario3-large.yaml &
+#   for i in $(seq 1 25); do
+#     ./worker -config config/scenario3-large.yaml &
+#   done
+# ============================================================================
+
+mysql:
+  host: localhost
+  port: 3306
+  user: root
+  password: root
+  database: vibeflow
+  charset: utf8mb4
+  max_idle: 20
+  max_open: 200
+
+etcd:
+  endpoints: ["localhost:2379"]
+  dial_timeout: "3s"                # 缩短连接超时
+  lock_ttl: 5                         # 缩短锁 TTL，加快锁竞争释放
+
+prefixes:
+  tasks: "/vibeflow/tasks/"
+  heartbeats: "/vibeflow/heartbeats/"
+  workflows: "/vibeflow/workflows/"
+
+# Master 配置：全局并发上限 15000（10000 并发 + 50% 余量）
+master:
+  http_addr: ":8080"
+  max_concurrent_tasks: 15000
+  per_workflow_max_concurrency: 100   # 每个工作流上限 100，1000 个工作流 × 100 = 100000 上限
+  pending_task_timeout: "15m"         # 大规模场景排队更久，延长超时避免误杀
+  shutdown_timeout: "30s"
+  shutdown_delay: "1s"
+  default_task_timeout: "60s"         # 适当延长任务超时
+  default_base_backoff: "2s"
+  stale_check_interval: "5s"          # 每 5s 检查一次 Worker 存活
+  heartbeat_stale: "8s"              # 8s 无心跳即判定死亡，快速剔除
+  store_timeout: "3s"               # etcd 操作缩短超时，快速失败重试
+  max_history_cache: 5000             # 缓存更多历史工作流
+  cors_max_age: "12h"
+  ws:
+    read_timeout: "60s"
+    ping_interval: "15s"              # 加快 ping 间隔
+    write_timeout: "10s"
+    max_message_size: 8192            # 加大单条消息上限
+    broadcast_buffer: 2048            # 大幅增加广播缓冲，应对大量工作流事件
+    client_buffer: 128
+
+# Worker 配置：每个 Worker 600 并发，25 个 Worker 合计 15000 并发能力
+worker:
+  id: ""
+  heartbeat_interval: "2s"            # 每 2s 上报一次心跳
+  shutdown_delay: "1s"
+  max_task_concurrency: 600
+
+logger:
+  dir: runtime/log
+  level: warn                          # 大规模场景降低日志级别，减少 IO 开销
+
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"
+  service_name: "vibeflow"
+  sample_rate: 0.01                   # 大规模场景极低采样率

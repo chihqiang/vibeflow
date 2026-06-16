@@ -1,0 +1,7 @@
+# 忽略运行时数据，仅保留目录结构
+mysql/*
+!mysql/.gitkeep
+etcd/*
+!etcd/.gitkeep
+jaeger/*
+!jaeger/.gitkeep

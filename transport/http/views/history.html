@@ -1,0 +1,239 @@
+{%define "history.html"%}
+{%template "header" .%}
+<main class="max-w-7xl mx-auto px-4 sm:px-6 py-6" id="app">
+  <div class="mb-6">
+    <h1 class="text-xl font-bold text-gray-800">历史记录</h1>
+    <p class="text-sm text-gray-500 mt-1">查看已结束的工作流执行记录</p>
+  </div>
+
+  <!-- 统计概览 -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div class="text-gray-500 text-xs font-medium">总计</div>
+      <div class="text-2xl font-bold text-gray-700 mt-1">{{ total }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div class="text-green-500 text-xs font-medium">已完成</div>
+      <div class="text-2xl font-bold text-green-600 mt-1">{{ statusCounts.COMPLETED || 0 }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div class="text-red-500 text-xs font-medium">失败</div>
+      <div class="text-2xl font-bold text-red-600 mt-1">{{ statusCounts.FAILED || 0 }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <div class="text-orange-500 text-xs font-medium">已回滚</div>
+      <div class="text-2xl font-bold text-orange-600 mt-1">{{ statusCounts.ROLLED_BACK || 0 }}</div>
+    </div>
+  </div>
+
+  <!-- 搜索过滤 -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="flex-1 min-w-[200px]">
+        <input type="text" v-model="searchText" placeholder="搜索工作流名称..." class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none" @input="onSearchInput">
+      </div>
+      <select v-model="statusFilter" @change="loadHistory(1)" class="border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none">
+        <option value="">全部状态</option>
+        <option value="COMPLETED">已完成</option>
+        <option value="FAILED">失败</option>
+        <option value="ROLLED_BACK">已回滚</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- 历史记录列表 -->
+  <div v-if="loading" class="bg-white rounded-xl shadow-sm border border-gray-200 px-5 py-12 text-center text-gray-400">
+    <div class="animate-spin inline-block w-6 h-6 border-2 border-gray-300 border-t-indigo-600 rounded-full mb-3"></div>
+    <p class="text-sm">加载中...</p>
+  </div>
+
+  <div v-else-if="list.length === 0" class="bg-white rounded-xl shadow-sm border border-gray-200 px-5 py-12 text-center text-gray-400">
+    <div class="text-4xl mb-3">📋</div>
+    <p class="text-sm">暂无历史记录</p>
+    <p class="text-xs mt-1">工作流执行结束后会记录在此处</p>
+  </div>
+
+    <div v-else class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+        <tr>
+          <th class="text-left px-5 py-3 font-medium">名称</th>
+          <th class="text-left px-5 py-3 font-medium">UUID</th>
+          <th class="text-left px-5 py-3 font-medium">状态</th>
+          <th class="text-left px-5 py-3 font-medium">任务进度</th>
+          <th class="text-left px-5 py-3 font-medium">重试配置</th>
+          <th class="text-left px-5 py-3 font-medium">开始时间</th>
+          <th class="text-left px-5 py-3 font-medium">操作</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100">
+        <tr v-for="s in list" :key="s.workflow.uuid" class="hover:bg-gray-50 transition">
+          <td class="px-5 py-3">
+            <a :href="'/workflows/' + encodeURIComponent(s.workflow.uuid)" class="font-medium text-indigo-600 hover:text-indigo-800">{{ s.workflow.name }}</a>
+            <div v-if="s.error" class="text-xs text-red-500 mt-0.5 truncate max-w-xs" :title="s.error">{{ s.error }}</div>
+          </td>
+          <td class="px-5 py-3 text-xs text-gray-400 font-mono max-w-[160px] truncate" :title="s.workflow.uuid">{{ s.workflow.uuid }}</td>
+          <td class="px-5 py-3">
+            <span v-if="s.status === 'COMPLETED'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">已完成</span>
+            <span v-else-if="s.status === 'FAILED'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">失败</span>
+            <span v-else-if="s.status === 'ROLLED_BACK'" class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">已回滚</span>
+            <span v-else class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">{{ s.status }}</span>
+          </td>
+          <td class="px-5 py-3">
+            <div class="flex items-center gap-1.5">
+              <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden max-w-[80px]">
+                <div class="h-full rounded-full transition-all" :class="progressBarColor(s)" :style="{ width: taskPct(s) + '%' }"></div>
+              </div>
+              <span class="text-xs text-gray-500">{{ completedCount(s) }}/{{ taskCount(s) }}</span>
+            </div>
+            <div v-if="rolledBackCount(s) > 0" class="text-xs text-orange-500 mt-0.5">⟳ {{ rolledBackCount(s) }} 个任务已回滚</div>
+          </td>
+          <td class="px-5 py-3">
+            <span v-if="s.workflow.max_retries > 0" class="text-xs text-gray-500">最多 {{ s.workflow.max_retries }} 次 · 退避 {{ s.workflow.base_backoff }}s</span>
+            <span v-else class="text-xs text-gray-400">不重试</span>
+          </td>
+          <td class="px-5 py-3 text-gray-500 text-xs">{{ formatTime(s.started_at) }}</td>
+          <td class="px-5 py-3">
+            <div class="flex items-center gap-2">
+              <a :href="'/workflows/' + encodeURIComponent(s.workflow.uuid)" class="text-xs text-indigo-600 hover:text-indigo-800 font-medium">详情</a>
+              <button @click="retryWorkflow(s.workflow.uuid)" class="text-xs text-amber-600 hover:text-amber-800 font-medium">重新运行</button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 分页 -->
+  <div v-if="totalPages > 1" class="flex items-center justify-between mt-4">
+    <div class="text-sm text-gray-500">共 {{ total }} 条，第 {{ page }} / {{ totalPages }} 页</div>
+    <div class="flex gap-1">
+      <button @click="loadHistory(1)" :disabled="page <= 1" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">首页</button>
+      <button @click="loadHistory(page - 1)" :disabled="page <= 1" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">上一页</button>
+      <button @click="loadHistory(page + 1)" :disabled="page >= totalPages" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">下一页</button>
+      <button @click="loadHistory(totalPages)" :disabled="page >= totalPages" class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">末页</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const { createApp } = Vue;
+createApp({
+  data() {
+    return {
+      list: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+      totalPages: 0,
+      loading: false,
+      searchText: '',
+      statusFilter: '',
+      searchTimer: null
+    };
+  },
+  computed: {
+    statusCounts() {
+      const counts = {};
+      for (const s of this.list) {
+        counts[s.status] = (counts[s.status] || 0) + 1;
+      }
+      return counts;
+    }
+  },
+  mounted() {
+    this.loadHistory(1);
+  },
+  methods: {
+    formatTime(t) {
+      if (!t) return '-';
+      const d = new Date(t);
+      return d.getFullYear() + '-' +
+        String(d.getMonth()+1).padStart(2,'0') + '-' +
+        String(d.getDate()).padStart(2,'0') + ' ' +
+        String(d.getHours()).padStart(2,'0') + ':' +
+        String(d.getMinutes()).padStart(2,'0') + ':' +
+        String(d.getSeconds()).padStart(2,'0');
+    },
+    taskCount(s) {
+      const groups = s.workflow.task_groups || [];
+      let count = 0;
+      for (const g of groups) count += g.length;
+      // 也计入分支中的任务
+      if (s.branch_task_index) count += Object.keys(s.branch_task_index).length;
+      return count;
+    },
+    completedCount(s) {
+      return Object.keys(s.completed_tasks || {}).length;
+    },
+    rolledBackCount(s) {
+      return Object.keys(s.rolled_back || {}).length;
+    },
+    taskPct(s) {
+      const total = this.taskCount(s);
+      if (total === 0) return 0;
+      return Math.round(this.completedCount(s) / total * 100);
+    },
+    progressBarColor(s) {
+      if (s.status === 'COMPLETED') return 'bg-green-500';
+      if (s.status === 'ROLLED_BACK') return 'bg-orange-500';
+      return 'bg-red-500';
+    },
+    onSearchInput() {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => {
+        this.loadHistory(1);
+      }, 300);
+    },
+    async loadHistory(p) {
+      this.loading = true;
+      this.page = p;
+      try {
+        const params = new URLSearchParams({ page: String(p), page_size: String(this.pageSize) });
+        const res = await fetch('/api/v1/history/paged?' + params.toString());
+        const json = await res.json();
+        if (json.code === 0 && json.data) {
+          let items = json.data.list || [];
+          // 前端过滤
+          if (this.searchText) {
+            const q = this.searchText.toLowerCase();
+            items = items.filter(s => s.workflow.name.toLowerCase().includes(q));
+          }
+          if (this.statusFilter) {
+            items = items.filter(s => s.status === this.statusFilter);
+          }
+          this.list = items;
+          this.total = json.data.total;
+          this.totalPages = Math.max(1, Math.ceil(this.total / this.pageSize));
+        } else {
+          this.list = [];
+          this.total = 0;
+          this.totalPages = 0;
+        }
+      } catch (e) {
+        console.error('加载历史记录失败', e);
+        this.list = [];
+      } finally {
+        this.loading = false;
+      }
+    },
+    async retryWorkflow(uuid) {
+      const name = this.list.find(s => s.workflow.uuid === uuid)?.workflow?.name || uuid;
+      const ok = await confirmModal('确认重新运行', '确定要重新运行工作流「' + name + '」吗？');
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(uuid) + '/retry', { method: 'POST' });
+        const json = await res.json();
+        if (json.code === 0) {
+          showToastSuccess('已重新运行');
+          this.loadHistory(this.page);
+        } else {
+          showToastError('运行失败: ' + (json.msg || '未知错误'));
+        }
+      } catch (e) { showToastError('请求失败: ' + e); }
+    }
+  }
+}).mount('#app');
+</script>
+{%template "footer" .%}
+{%end%}

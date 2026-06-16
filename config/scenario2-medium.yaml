@@ -1,0 +1,72 @@
+# ============================================================================
+# 场景二：中型集群 — 100 个工作流、1000 个并发任务
+# 瓶颈：Worker 可能还能扛，Master 开始有 Watch 事件处理压力
+# 策略：适当提升 Master 并发上限和 Worker 并发能力，增加 Worker 数量
+# ============================================================================
+# 启动方式：1 个 Master + 5~10 个 Worker
+# docker compose 启动示例：
+#   ./master -config config/scenario2-medium.yaml &
+#   for i in $(seq 1 8); do
+#     ./worker -config config/scenario2-medium.yaml &
+#   done
+# ============================================================================
+
+mysql:
+  host: localhost
+  port: 3306
+  user: root
+  password: root
+  database: vibeflow
+  charset: utf8mb4
+  max_idle: 10
+  max_open: 50
+
+etcd:
+  endpoints: ["localhost:2379"]
+  dial_timeout: "5s"
+  lock_ttl: 10
+
+prefixes:
+  tasks: "/vibeflow/tasks/"
+  heartbeats: "/vibeflow/heartbeats/"
+  workflows: "/vibeflow/workflows/"
+
+# Master 配置：并发上限 1200，留 20% 余量应对突发
+master:
+  http_addr: ":8080"
+  max_concurrent_tasks: 1200
+  per_workflow_max_concurrency: 50     # 每个工作流最多 50 并发（100 个工作流 × 50 = 5000 上限）
+  pending_task_timeout: "10m"           # 排队超时延长，避免任务在排队期间超时
+  shutdown_timeout: "10s"
+  shutdown_delay: "500ms"
+  default_task_timeout: "30s"
+  default_base_backoff: "1s"
+  stale_check_interval: "10s"           # 加快死 Worker 检测
+  heartbeat_stale: "10s"
+  store_timeout: "5s"
+  max_history_cache: 1000
+  cors_max_age: "12h"
+  ws:
+    read_timeout: "60s"
+    ping_interval: "30s"
+    write_timeout: "10s"
+    max_message_size: 4096
+    broadcast_buffer: 512                # 加大广播缓冲，应对更多工作流事件
+    client_buffer: 64
+
+# Worker 配置：每个 Worker 150 并发，8 个 Worker 合计 1200 并发能力
+worker:
+  id: ""
+  heartbeat_interval: "3s"              # 加快心跳，让 Master 更快感知 Worker 存活
+  shutdown_delay: "500ms"
+  max_task_concurrency: 150
+
+logger:
+  dir: runtime/log
+  level: info
+
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"
+  service_name: "vibeflow"
+  sample_rate: 0.5

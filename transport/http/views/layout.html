@@ -1,0 +1,205 @@
+{%define "header"%}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{%block "title" .%}VibeFlow{%end%}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <style>
+    /* Toast 通知 */
+    .vf-toast-container {
+      position: fixed; top: 72px; right: 20px; z-index: 9999;
+      display: flex; flex-direction: column; gap: 8px; max-width: 420px;
+    }
+    .vf-toast {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 12px 16px; border-radius: 10px;
+      font-size: 13px; line-height: 1.5;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1), 0 1px 4px rgba(0,0,0,0.06);
+      animation: vf-slide-in 0.25s ease-out;
+      pointer-events: auto;
+    }
+    .vf-toast.leaving { animation: vf-slide-out 0.2s ease-in forwards; }
+    .vf-toast-success { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+    .vf-toast-error   { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .vf-toast-warn    { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .vf-toast-info    { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .vf-toast-close   { margin-left: auto; background: none; border: none; cursor: pointer; font-size: 15px; opacity: 0.4; padding: 0; line-height: 1; }
+    .vf-toast-close:hover { opacity: 0.8; }
+
+    /* Modal 弹出层 */
+    .vf-modal-overlay {
+      position: fixed; inset: 0; z-index: 10000;
+      background: rgba(0,0,0,0.35);
+      display: flex; align-items: center; justify-content: center;
+      animation: vf-fade-in 0.15s ease-out;
+    }
+    .vf-modal-overlay.leaving { animation: vf-fade-out 0.12s ease-in forwards; }
+    .vf-modal {
+      background: #fff; border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+      width: 90%; max-width: 440px; padding: 24px;
+      animation: vf-modal-in 0.2s ease-out;
+    }
+    .vf-modal-overlay.leaving .vf-modal { animation: vf-modal-out 0.12s ease-in forwards; }
+    .vf-modal-title { font-size: 16px; font-weight: 600; color: #1f2937; margin-bottom: 8px; }
+    .vf-modal-body  { font-size: 14px; color: #6b7280; line-height: 1.6; }
+    .vf-modal-input { width: 100%; margin-top: 12px; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; outline: none; }
+    .vf-modal-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+    .vf-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+    .vf-btn { padding: 7px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: background 0.15s; }
+    .vf-btn-default  { background: #f3f4f6; color: #374151; }
+    .vf-btn-default:hover  { background: #e5e7eb; }
+    .vf-btn-primary { background: #4f46e5; color: #fff; }
+    .vf-btn-primary:hover { background: #4338ca; }
+    .vf-btn-danger  { background: #ef4444; color: #fff; }
+    .vf-btn-danger:hover  { background: #dc2626; }
+
+    @keyframes vf-slide-in  { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes vf-slide-out { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(40px); } }
+    @keyframes vf-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes vf-fade-out { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes vf-modal-in  { from { opacity: 0; transform: scale(0.95) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+    @keyframes vf-modal-out { from { opacity: 1; transform: scale(1) translateY(0); } to { opacity: 0; transform: scale(0.95) translateY(10px); } }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <nav class="bg-indigo-700 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6">
+      <div class="flex items-center justify-between h-14">
+        <a href="/" class="font-bold text-lg tracking-tight">VibeFlow</a>
+        <div class="flex gap-1 text-sm font-medium">
+          <a href="/" class="nav-link px-3 py-1.5 rounded transition {%if eq .ActiveNav "dashboard"%}bg-indigo-600{%else%}hover:bg-indigo-600{%end%}">控制台</a>
+          <a href="/tasks" class="nav-link px-3 py-1.5 rounded transition {%if eq .ActiveNav "tasks"%}bg-indigo-600{%else%}hover:bg-indigo-600{%end%}">任务</a>
+          <a href="/workflows" class="nav-link px-3 py-1.5 rounded transition {%if eq .ActiveNav "workflows"%}bg-indigo-600{%else%}hover:bg-indigo-600{%end%}">工作流</a>
+          <a href="/history" class="nav-link px-3 py-1.5 rounded transition {%if eq .ActiveNav "history"%}bg-indigo-600{%else%}hover:bg-indigo-600{%end%}">历史记录</a>
+        </div>
+      </div>
+    </div>
+  </nav>
+  <!-- Toast 通知容器 -->
+  <div id="vf-toast-container" class="vf-toast-container"></div>
+  <!-- Modal 弹出层容器 -->
+  <div id="vf-modal-root"></div>
+{%end%}
+
+{%define "footer"%}
+<script>
+// ===== 通用 Toast / Modal 工具（不依赖 Vue） =====
+;(function() {
+  // --- Toast ---
+  const tc = document.getElementById('vf-toast-container');
+  const icons = { success: '✓', error: '✕', warn: '⚠', info: 'ℹ' };
+
+  window.showToast = function(msg, level) {
+    level = level || 'info';
+    const el = document.createElement('div');
+    el.className = 'vf-toast vf-toast-' + level;
+    el.innerHTML = '<span style="font-size:16px">' + (icons[level] || '') + '</span><span>' + msg + '</span><button class="vf-toast-close" onclick="this.parentElement.remove()">×</button>';
+    tc.appendChild(el);
+    setTimeout(function() {
+      if (el.parentElement) {
+        el.classList.add('leaving');
+        setTimeout(function() { if (el.parentElement) el.remove(); }, 200);
+      }
+    }, 4000);
+  };
+
+  window.showToastSuccess = function(msg) { showToast(msg, 'success'); };
+  window.showToastError   = function(msg) { showToast(msg, 'error'); };
+  window.showToastWarn    = function(msg) { showToast(msg, 'warn'); };
+  window.showToastInfo    = function(msg) { showToast(msg, 'info'); };
+
+  // --- Modal ---
+  window.showModal = function(opts) {
+    var root = document.getElementById('vf-modal-root');
+    var overlay = document.createElement('div');
+    overlay.className = 'vf-modal-overlay';
+
+    var html = '<div class="vf-modal">';
+    if (opts.title) html += '<div class="vf-modal-title">' + opts.title + '</div>';
+    if (opts.body) html += '<div class="vf-modal-body">' + opts.body + '</div>';
+    if (opts.showInput) html += '<input id="vf-modal-input" class="vf-modal-input" type="text" placeholder="' + (opts.inputPlaceholder || '') + '" value="' + (opts.inputValue || '') + '">';
+    html += '<div class="vf-modal-actions">';
+    html += '<button class="vf-btn vf-btn-default" id="vf-modal-cancel">' + (opts.cancelText || '取消') + '</button>';
+    html += '<button class="vf-btn ' + (opts.confirmDanger ? 'vf-btn-danger' : 'vf-btn-primary') + '" id="vf-modal-confirm">' + (opts.confirmText || '确认') + '</button>';
+    html += '</div></div>';
+    overlay.innerHTML = html;
+    root.appendChild(overlay);
+
+    var inputEl = overlay.querySelector('#vf-modal-input');
+
+    function close(cb) {
+      overlay.classList.add('leaving');
+      setTimeout(function() {
+        if (overlay.parentElement) overlay.remove();
+        if (cb) cb();
+      }, 150);
+    }
+
+    overlay.querySelector('#vf-modal-cancel').onclick = function() {
+      close(function() { if (opts.onCancel) opts.onCancel(); });
+    };
+    overlay.querySelector('#vf-modal-confirm').onclick = function() {
+      var value = inputEl ? inputEl.value : undefined;
+      close(function() { if (opts.onConfirm) opts.onConfirm(value); });
+    };
+
+    // 点击遮罩关闭
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) {
+        close(function() { if (opts.onCancel) opts.onCancel(); });
+      }
+    });
+
+    // ESC 关闭
+    var escHandler = function(e) {
+      if (e.key === 'Escape') {
+        document.removeEventListener('keydown', escHandler);
+        close(function() { if (opts.onCancel) opts.onCancel(); });
+      }
+    };
+    document.addEventListener('keydown', escHandler);
+
+    // 自动聚焦输入框
+    if (inputEl) setTimeout(function() { inputEl.focus(); }, 100);
+  };
+
+  window.confirmModal = function(title, body, opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+      showModal({
+        title: title,
+        body: body || '',
+        confirmText: opts.confirmText || '确认',
+        cancelText: opts.cancelText || '取消',
+        confirmDanger: opts.confirmDanger || false,
+        showInput: false,
+        onConfirm: function() { resolve(true); },
+        onCancel: function() { resolve(false); }
+      });
+    });
+  };
+
+  window.promptModal = function(title, opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+      showModal({
+        title: title,
+        body: opts.body || '',
+        confirmText: opts.confirmText || '确认',
+        cancelText: opts.cancelText || '取消',
+        showInput: true,
+        inputPlaceholder: opts.placeholder || '',
+        inputValue: opts.defaultValue || '',
+        onConfirm: function(value) { resolve(value); },
+        onCancel: function() { resolve(null); }
+      });
+    });
+  };
+})();
+</script>
+</body>
+</html>
+{%end%}

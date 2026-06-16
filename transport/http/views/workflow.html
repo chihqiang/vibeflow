@@ -1,0 +1,527 @@
+{%define "workflow.html"%}
+{%template "header" .%}
+<main class="max-w-7xl mx-auto px-4 sm:px-6 py-6" id="app">
+  <div class="mb-6">
+    <a href="/workflows" class="text-sm text-indigo-600 hover:text-indigo-800">&larr; 返回工作流列表</a>
+  </div>
+
+  <div v-if="notFound" class="bg-white rounded-xl shadow-sm border border-gray-200 px-5 py-12 text-center text-gray-400">
+    <p class="text-sm">工作流不存在</p>
+  </div>
+
+  <template v-if="state">
+    <!-- 工作流基本信息 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-xl font-bold text-gray-800">{{ state.workflow.name }}</h1>
+          <div class="flex flex-wrap items-center gap-3 mt-1 text-sm text-gray-500">
+            <span>开始时间: {{ formatTime(state.started_at) }}</span>
+            <span>任务数: {{ tasks.length }}</span>
+            <span v-if="state.error" class="text-red-500">错误: {{ state.error }}</span>
+            <span v-if="wsConnected" class="text-green-500 text-xs">● 实时</span>
+          </div>
+        </div>
+        <div>
+          <span v-if="state.status === 'RUNNING'" class="px-3 py-1 rounded-full text-sm font-medium bg-indigo-100 text-indigo-700">运行中</span>
+          <span v-else-if="state.status === 'PAUSED'" class="px-3 py-1 rounded-full text-sm font-medium bg-yellow-100 text-yellow-700">审批中</span>
+          <span v-else-if="state.status === 'ROLLING_BACK'" class="px-3 py-1 rounded-full text-sm font-medium bg-orange-100 text-orange-700">回滚中</span>
+          <span v-else-if="state.status === 'ROLLED_BACK'" class="px-3 py-1 rounded-full text-sm font-medium bg-orange-100 text-orange-700">已回滚</span>
+          <span v-else-if="state.status === 'COMPLETED'" class="px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-700">已完成</span>
+          <span v-else-if="state.status === 'FAILED'" class="px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-700">失败</span>
+          <span v-else class="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-600">{{ state.status }}</span>
+        </div>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button v-if="state.status === 'RUNNING'" @click="cancelWorkflow" class="text-sm bg-red-500 text-white px-4 py-1.5 rounded-lg hover:bg-red-600 transition">取消工作流</button>
+        <button v-if="state.status === 'PAUSED'" @click="approveWorkflow" class="text-sm bg-green-500 text-white px-4 py-1.5 rounded-lg hover:bg-green-600 transition">审批通过</button>
+        <button v-if="state.status === 'PAUSED'" @click="rejectWorkflow" class="text-sm bg-red-500 text-white px-4 py-1.5 rounded-lg hover:bg-red-600 transition">驳回</button>
+        <button v-if="state.status === 'FAILED' || state.status === 'COMPLETED' || state.status === 'ROLLED_BACK'" @click="retryWorkflow" class="text-sm bg-indigo-600 text-white px-4 py-1.5 rounded-lg hover:bg-indigo-700 transition">重试工作流</button>
+      </div>
+
+      <!-- 工作流配置信息 -->
+      <div class="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+        <div v-if="state.workflow.timeout_sec" class="bg-gray-50 rounded-lg px-3 py-2">
+          <span class="text-gray-400">工作流超时</span>
+          <span class="text-gray-700 font-medium ml-1">{{ state.workflow.timeout_sec }}s</span>
+        </div>
+        <div v-if="state.workflow.task_timeout_sec" class="bg-gray-50 rounded-lg px-3 py-2">
+          <span class="text-gray-400">任务超时</span>
+          <span class="text-gray-700 font-medium ml-1">{{ state.workflow.task_timeout_sec }}s</span>
+        </div>
+        <div v-if="state.workflow.max_retries > 0" class="bg-gray-50 rounded-lg px-3 py-2">
+          <span class="text-gray-400">最大重试</span>
+          <span class="text-gray-700 font-medium ml-1">{{ state.workflow.max_retries }}</span>
+        </div>
+        <div v-if="state.workflow.base_backoff" class="bg-gray-50 rounded-lg px-3 py-2">
+          <span class="text-gray-400">基础退避</span>
+          <span class="text-gray-700 font-medium ml-1">{{ state.workflow.base_backoff }}s</span>
+        </div>
+        <div v-if="state.workflow.trigger === 'cron'" class="bg-purple-50 rounded-lg px-3 py-2">
+          <span class="text-purple-400">Cron</span>
+          <span class="text-purple-700 font-medium ml-1">{{ state.workflow.cron_expr }}</span>
+        </div>
+      </div>
+
+      <!-- 暂停信息 -->
+      <div v-if="state.status === 'PAUSED'" class="mt-3 bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3 text-sm">
+        <div class="flex items-center gap-2 text-yellow-700 font-medium">
+          <span>⏸ 等待审批</span>
+        </div>
+        <div class="text-yellow-600 text-xs mt-1">
+          任务「{{ state.paused_task_name }}」需要人工审批（第 {{ state.paused_group_idx + 1 }} 组）
+        </div>
+        <!-- 审批详情：暂停任务的输出 -->
+        <div v-if="state.paused_task_output && Object.keys(state.paused_task_output).length > 0" class="mt-3 border-t border-yellow-200 pt-3">
+          <div class="text-xs font-medium text-yellow-700 mb-1">审批上下文</div>
+          <div class="bg-yellow-100/50 rounded-lg p-3 max-h-48 overflow-y-auto">
+            <table class="w-full text-xs">
+              <tbody>
+                <tr v-for="(val, key) in state.paused_task_output" :key="key" class="border-b border-yellow-200/50 last:border-0">
+                  <td class="py-1 pr-3 font-medium text-yellow-800 whitespace-nowrap align-top">{{ key }}</td>
+                  <td class="py-1 text-yellow-700 break-all">{{ formatOutputVal(val) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 回滚信息 -->
+      <div v-if="state.status === 'ROLLING_BACK'" class="mt-3 bg-orange-50 border border-orange-200 rounded-lg px-4 py-3 text-sm text-orange-700">
+        <div class="flex items-center gap-2 font-medium">⟳ 补偿回滚中...</div>
+      </div>
+    </div>
+
+    <!-- 重试进度（仅 RUNNING 且有失败任务且有重试配置时显示） -->
+    <div v-if="state.status === 'RUNNING' && state.workflow.max_retries > 0 && Object.keys(state.failed_tasks || {}).length > 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+      <h2 class="font-semibold text-gray-700 mb-3">重试进度</h2>
+      <div class="space-y-2">
+        <div v-for="(err, name) in state.failed_tasks" :key="name" class="border border-amber-200 rounded-lg p-3 bg-amber-50">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="text-sm font-medium text-amber-800">{{ name }}</span>
+              <span class="text-xs text-amber-600 ml-2">正在等待重试</span>
+            </div>
+            <div class="text-xs text-amber-700">
+              基础退避 {{ state.workflow.base_backoff }}s · 最多 {{ state.workflow.max_retries }} 次
+            </div>
+          </div>
+          <div class="text-xs text-amber-600 mt-1 truncate" :title="err">错误: {{ err }}</div>
+          <div class="mt-2 flex flex-wrap gap-1">
+            <span v-for="attempt in retryAttempts(name)" :key="attempt.idx" class="px-2 py-0.5 rounded-full text-[10px] font-medium"
+              :class="attempt.status === 'done' ? 'bg-red-100 text-red-600' : attempt.status === 'next' ? 'bg-amber-200 text-amber-700 animate-pulse' : 'bg-gray-100 text-gray-400'">
+              第{{ attempt.idx }}次{{ attempt.status === 'next' ? ' ⟳' : attempt.status === 'done' ? ' ✗' : '' }}
+              <template v-if="attempt.backoff"> · {{ attempt.backoff }}</template>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 任务执行进度 -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+      <h2 class="font-semibold text-gray-700 mb-4">任务执行进度</h2>
+      <div class="flex flex-wrap items-center gap-2 justify-center py-4">
+        <template v-for="(group, gi) in taskGroups" :key="'g'+gi">
+          <!-- 组间串行箭头 -->
+          <div v-if="gi > 0" class="text-gray-400 text-xl font-bold px-1">→</div>
+          <!-- 组内并行任务 -->
+          <div class="flex flex-col items-center gap-1">
+            <div v-if="group.length > 1" class="text-[10px] text-indigo-400 font-medium mb-1">∥ 并行</div>
+            <div class="flex items-center gap-1">
+              <template v-for="(node, ti) in group" :key="ti">
+                <div v-if="ti > 0" class="text-indigo-300 text-sm font-bold">∥</div>
+                <div class="w-36 px-3 py-2.5 rounded-lg border-2 text-center text-xs font-medium leading-tight relative"
+                  :class="taskStatusClass(node.name || node)">
+                  <div class="font-semibold">{{ node.name || node }}</div>
+                  <div class="mt-1 text-[10px] uppercase tracking-wide opacity-75">{{ taskStatus[node.name || node] || 'pending' }}</div>
+                  <div v-if="(node.delay_sec || 0) > 0" class="mt-1 text-[9px] text-gray-400">⏱ {{ node.delay_sec }}s</div>
+                  <!-- 分支标记 -->
+                  <div v-if="node.branches && Object.keys(node.branches).length > 0" class="mt-1 text-[9px] text-indigo-400">
+                    ↗ {{ Object.keys(node.branches).length }} 个分支
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- 分支详情 -->
+    <div v-if="branchNodes.length > 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+      <h2 class="font-semibold text-gray-700 mb-3">条件分支详情</h2>
+      <div class="space-y-3">
+        <div v-for="node in branchNodes" :key="node.name" class="border border-indigo-100 rounded-lg p-3 bg-indigo-50/30">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-sm font-medium text-indigo-700">{{ node.name }}</span>
+            <span class="text-xs text-gray-500">定义了 {{ branchCount(node) }} 个分支路径</span>
+          </div>
+          <div class="space-y-1.5">
+            <div v-for="(branchGroups, branchName) in node.branches" :key="branchName" class="flex items-center gap-2 text-xs">
+              <span class="px-2 py-0.5 rounded font-medium" :class="branchActiveClass(node.name, branchName)">
+                {{ branchName }}
+              </span>
+              <span class="text-gray-500">→</span>
+              <span class="text-gray-600">
+                <template v-for="(bg, bgi) in branchGroups" :key="bgi">
+                  <template v-if="bgi > 0"> → </template>
+                  [<template v-for="(bn, bni) in bg" :key="bni">
+                    <template v-if="bni > 0"> ∥ </template>
+                    <span :class="taskStatus[bn.name] === 'completed' ? 'text-green-600 font-medium' : taskStatus[bn.name] === 'failed' ? 'text-red-600 font-medium' : 'text-gray-500'">{{ bn.name }}</span>
+                  </template>]
+                </template>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 已完成任务的输出 -->
+    <div v-if="completedList.length > 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <h2 class="font-semibold text-gray-700 mb-4">已完成任务的输出</h2>
+      <div class="space-y-3">
+        <div v-for="(output, name) in completedList" :key="name" class="border border-gray-100 rounded-lg p-3">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs font-medium text-green-700">{{ name }} ✓</span>
+            <span v-if="state.rolled_back && state.rolled_back[name]" class="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-600 font-medium">已回滚</span>
+          </div>
+          <pre class="text-xs text-gray-600 bg-gray-50 rounded p-2 overflow-x-auto max-h-48 overflow-y-auto">{{ JSON.stringify(output, null, 2) }}</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- 失败的任务 -->
+    <div v-if="failedList.length > 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mt-4">
+      <h2 class="font-semibold text-gray-700 mb-4">失败的任务</h2>
+      <div class="space-y-3">
+        <div v-for="(err, name) in failedList" :key="name" class="border border-red-100 rounded-lg p-3 bg-red-50">
+          <div class="text-xs font-medium text-red-700 mb-1">{{ name }} ✗</div>
+          <div class="text-xs text-red-600">{{ err }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 已回滚的任务 -->
+    <div v-if="rolledBackList.length > 0" class="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mt-4">
+      <h2 class="font-semibold text-gray-700 mb-4">已回滚的任务（Saga 补偿）</h2>
+      <div class="space-y-2">
+        <div v-for="(rolled, name) in rolledBackList" :key="name" class="flex items-center gap-2 text-sm text-orange-700">
+          <span class="text-base">⟳</span>
+          <span class="font-medium">{{ name }}</span>
+          <span class="text-xs text-orange-500">补偿已执行</span>
+        </div>
+      </div>
+    </div>
+  </template>
+</main>
+
+<script>
+const { createApp } = Vue;
+createApp({
+  data() {
+    return {
+      state: null,
+      notFound: false,
+      ws: null,
+      wsConnected: false,
+      workflowUUID: decodeURIComponent((window.location.pathname.split('/workflows/')[1] || ''))
+    };
+  },
+  computed: {
+    tasks() {
+      if (!this.state) return [];
+      const groups = this.state.workflow.task_groups || [];
+      const names = [];
+      for (const g of groups) {
+        for (const node of g) names.push(node.name);
+      }
+      // 添加分支中的任务名
+      if (this.state.branch_task_index) {
+        for (const name of Object.keys(this.state.branch_task_index)) names.push(name);
+      }
+      return names;
+    },
+    taskGroups() {
+      if (!this.state) return [];
+      return this.state.workflow.task_groups || [];
+    },
+    // 有分支定义的任务节点
+    branchNodes() {
+      const nodes = [];
+      for (const g of this.taskGroups) {
+        for (const node of g) {
+          if (node.branches && Object.keys(node.branches).length > 0) {
+            nodes.push(node);
+          }
+        }
+      }
+      return nodes;
+    },
+    taskStatus() {
+      if (!this.state) return {};
+      const completed = this.state.completed_tasks || {};
+      const failed = this.state.failed_tasks || {};
+      const m = {};
+      // 主任务组的任务
+      for (const g of this.taskGroups) {
+        for (const node of g) {
+          const name = node.name || node;
+          if (completed[name]) m[name] = 'completed';
+          else if (failed[name]) m[name] = 'failed';
+          else if (this.state.status === 'RUNNING') m[name] = 'running';
+          else if (this.state.status === 'PAUSED' && name === this.state.paused_task_name) m[name] = 'paused';
+          else m[name] = 'pending';
+          // 标记分支内的任务
+          if (node.branches) {
+            for (const branchName of Object.keys(node.branches)) {
+              const branchGroups = node.branches[branchName];
+              for (const bg of branchGroups) {
+                for (const bn of bg) {
+                  if (completed[bn.name]) m[bn.name] = 'completed';
+                  else if (failed[bn.name]) m[bn.name] = 'failed';
+                  else m[bn.name] = 'pending';
+                }
+              }
+            }
+          }
+        }
+      }
+      return m;
+    },
+    completedList() {
+      const r = {};
+      for (const [k, v] of Object.entries(this.state?.completed_tasks || {})) {
+        r[k] = v;
+      }
+      return r;
+    },
+    failedList() {
+      const r = {};
+      for (const [k, v] of Object.entries(this.state?.failed_tasks || {})) {
+        r[k] = v;
+      }
+      return r;
+    },
+    rolledBackList() {
+      const r = {};
+      for (const [k, v] of Object.entries(this.state?.rolled_back || {})) {
+        if (v) r[k] = v;
+      }
+      return r;
+    }
+  },
+  mounted() {
+    if (this.workflowUUID) { this.load(); this.connectWS(); }
+  },
+  beforeUnmount() {
+    if (this.ws) this.ws.close();
+  },
+  methods: {
+    taskStatusClass(name) {
+      const s = this.taskStatus[name];
+      if (s === 'completed') return 'border-green-400 bg-green-50 text-green-700';
+      if (s === 'failed') return 'border-red-400 bg-red-50 text-red-700';
+      if (s === 'paused') return 'border-yellow-400 bg-yellow-50 text-yellow-700';
+      if (s === 'running') return 'border-indigo-400 bg-indigo-50 text-indigo-700 animate-pulse';
+      return 'border-gray-300 bg-white text-gray-500';
+    },
+    // 判断分支是否被激活（执行了分支中的任务即认为激活）
+    branchActiveClass(parentName, branchName) {
+      const btIndex = this.state?.branch_task_index || {};
+      for (const [taskName, loc] of Object.entries(btIndex)) {
+        if (loc.ParentNodeName === parentName && loc.BranchName === branchName) {
+          if (this.state.completed_tasks && this.state.completed_tasks[taskName]) {
+            return 'bg-indigo-100 text-indigo-700';
+          }
+          if (this.state.failed_tasks && this.state.failed_tasks[taskName]) {
+            return 'bg-red-100 text-red-700';
+          }
+        }
+      }
+      return 'bg-gray-100 text-gray-500';
+    },
+    branchCount(node) {
+      return node.branches ? Object.keys(node.branches).length : 0;
+    },
+    // 计算重试尝试次数的时间线
+    retryAttempts(taskName) {
+      const maxRetries = this.state?.workflow?.max_retries || 0;
+      const baseBackoff = this.state?.workflow?.base_backoff || 0;
+      if (maxRetries <= 0 || baseBackoff <= 0) return [];
+      const attempts = [];
+      for (let i = 1; i <= maxRetries; i++) {
+        const backoffSec = baseBackoff * Math.pow(2, i - 1);
+        attempts.push({
+          idx: i,
+          backoff: this.formatDuration(backoffSec),
+          status: 'pending'
+        });
+      }
+      // 标记为已完成（失败即意味着已经尝试过）
+      // 失败任务可能在等待重试，当前状态都为 "done" 表示已完成尝试
+      for (let i = 0; i < maxRetries; i++) {
+        if (i < maxRetries - 1) {
+          attempts[i].status = 'done';
+        } else {
+          attempts[i].status = 'next'; // 下一次要重试的
+        }
+      }
+      // 简化：全部标记为 done 除了最后一个标记为 next
+      for (let i = 0; i < attempts.length; i++) {
+        attempts[i].status = i < attempts.length - 1 ? 'done' : 'next';
+      }
+      return attempts;
+    },
+    formatDuration(seconds) {
+      if (seconds < 60) return seconds + 's';
+      if (seconds < 3600) return Math.floor(seconds / 60) + 'm' + (seconds % 60 > 0 ? seconds % 60 + 's' : '');
+      return Math.floor(seconds / 3600) + 'h' + Math.floor((seconds % 3600) / 60) + 'm';
+    },
+    formatOutputVal(val) {
+      if (val === null || val === undefined) return '-';
+      if (typeof val === 'object') return JSON.stringify(val);
+      return String(val);
+    },
+    formatTime(t) {
+      if (!t) return '-';
+      const d = new Date(t);
+      return d.getFullYear() + '-' +
+        String(d.getMonth()+1).padStart(2,'0') + '-' +
+        String(d.getDate()).padStart(2,'0') + ' ' +
+        String(d.getHours()).padStart(2,'0') + ':' +
+        String(d.getMinutes()).padStart(2,'0') + ':' +
+        String(d.getSeconds()).padStart(2,'0');
+    },
+    async load() {
+      try {
+        let res = await fetch('/api/v1/workflows/' + encodeURIComponent(this.workflowUUID));
+        let json = await res.json();
+        if (json.code === 0 && json.data) { this.state = json.data; this.notFound = false; return; }
+        res = await fetch('/api/v1/history/' + encodeURIComponent(this.workflowUUID));
+        json = await res.json();
+        if (json.code === 0 && json.data) { this.state = json.data; this.notFound = false; return; }
+        this.notFound = true;
+      } catch (e) { console.error('加载工作流详情失败', e); }
+    },
+    connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = proto + '//' + location.host + '/ws?workflow=' + encodeURIComponent(this.workflowUUID);
+      this.ws = new WebSocket(wsUrl);
+      this.ws.onopen = () => { this.wsConnected = true; };
+      this.ws.onclose = () => { this.wsConnected = false; setTimeout(() => this.connectWS(), 3000); };
+      this.ws.onerror = () => { this.wsConnected = false; };
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'task_completed':
+              this.load();
+              showToastInfo('任务「' + (msg.data.task || '') + '」已完成');
+              break;
+            case 'task_failed':
+              this.load();
+              showToastError('任务「' + (msg.data.task || '') + '」失败');
+              break;
+            case 'task_rolled_back':
+              this.load();
+              showToastWarn('任务「' + (msg.data.task || '') + '」已回滚');
+              break;
+            case 'workflow_paused':
+              this.load();
+              showToastWarn('工作流已暂停，等待审批');
+              break;
+            case 'workflow_rolling_back':
+              this.load();
+              showToastWarn('工作流开始补偿回滚');
+              break;
+            case 'workflow_rolled_back':
+              this.load();
+              showToastWarn('工作流补偿回滚完成');
+              break;
+            case 'workflow_completed':
+              this.load();
+              showToastSuccess('工作流已完成');
+              break;
+            case 'workflow_failed':
+              this.load();
+              showToastError('工作流执行失败');
+              break;
+            case 'workflow_cancelled':
+              this.load();
+              showToastWarn('工作流已取消');
+              break;
+            case 'workflow_approved':
+              this.load();
+              showToastSuccess('审批已通过，继续执行');
+              break;
+            case 'workflow_rejected':
+              this.load();
+              showToastError('审批已驳回');
+              break;
+            case 'workflow_rolling_back':
+            case 'workflow_rolled_back':
+              this.load();
+              showToastError('工作流执行失败，已回滚');
+              break;
+          }
+        } catch (e) {}
+      };
+    },
+    async cancelWorkflow() {
+      const name = this.state?.workflow?.name || this.workflowUUID;
+      const ok = await confirmModal('确认取消', '确定要取消工作流「' + name + '」吗？', { confirmDanger: true, confirmText: '取消' });
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(this.workflowUUID), { method: 'DELETE' });
+        const json = await res.json();
+        if (json.code === 0) { this.load(); showToastSuccess('已取消'); }
+        else showToastError('取消失败: ' + (json.msg || ''));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    },
+    async retryWorkflow() {
+      const name = this.state?.workflow?.name || this.workflowUUID;
+      const ok = await confirmModal('确认重试', '确定要重试工作流「' + name + '」吗？');
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(this.workflowUUID) + '/retry', { method: 'POST' });
+        const json = await res.json();
+        if (json.code === 0) { this.load(); showToastSuccess('已重新运行'); }
+        else showToastError('重试失败: ' + (json.msg || ''));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    },
+    async approveWorkflow() {
+      const name = this.state?.workflow?.name || this.workflowUUID;
+      const ok = await confirmModal('审批通过', '确认审批通过工作流「' + name + '」吗？', { confirmText: '审批通过' });
+      if (!ok) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(this.workflowUUID) + '/approve', { method: 'POST' });
+        const json = await res.json();
+        if (json.code === 0) { this.load(); showToastSuccess('已审批通过'); }
+        else showToastError('审批失败: ' + (json.msg || ''));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    },
+    async rejectWorkflow() {
+      const name = this.state?.workflow?.name || this.workflowUUID;
+      const reason = await promptModal('驳回工作流', { body: '请输入驳回原因：', placeholder: '驳回原因（可选）' });
+      if (reason === null) return;
+      try {
+        const res = await fetch('/api/v1/workflows/' + encodeURIComponent(this.workflowUUID) + '/reject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: reason || '' })
+        });
+        const json = await res.json();
+        if (json.code === 0) { this.load(); showToastSuccess('已驳回'); }
+        else showToastError('驳回失败: ' + (json.msg || ''));
+      } catch (e) { showToastError('请求失败: ' + e); }
+    }
+  }
+}).mount('#app');
+</script>
+{%template "footer" .%}
+{%end%}

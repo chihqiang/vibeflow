@@ -1,0 +1,189 @@
+{%define "dashboard.html"%}
+{%template "header" .%}
+<main class="max-w-7xl mx-auto px-4 sm:px-6 py-6" id="app">
+  <div class="mb-6">
+    <h1 class="text-xl font-bold text-gray-800">控制台</h1>
+    <p class="text-sm text-gray-500 mt-1">工作流运行状态概览 <span v-if="wsConnected" class="text-green-500">● 实时</span><span v-else class="text-gray-400">○ 离线</span></p>
+  </div>
+
+  <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div class="text-gray-500 text-sm font-medium">运行中</div>
+      <div class="text-3xl font-bold text-indigo-600 mt-1">{{ running_count }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div class="text-gray-500 text-sm font-medium">审批中</div>
+      <div class="text-3xl font-bold text-yellow-600 mt-1">{{ paused_count }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div class="text-gray-500 text-sm font-medium">已完成</div>
+      <div class="text-3xl font-bold text-green-600 mt-1">{{ completed_count }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div class="text-gray-500 text-sm font-medium">失败</div>
+      <div class="text-3xl font-bold text-red-600 mt-1">{{ failed_count }}</div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div class="text-gray-500 text-sm font-medium">Worker</div>
+      <div class="text-3xl font-bold text-amber-600 mt-1">{{ alive_workers }} <span class="text-base font-normal text-gray-400">/ {{ total_workers }}</span></div>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200">
+      <div class="px-5 py-3 border-b border-gray-100 font-semibold text-gray-700 flex items-center gap-2">
+        <span class="relative flex h-2.5 w-2.5">
+          <span v-if="running_count > 0" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2.5 w-2.5" :class="running_count > 0 ? 'bg-indigo-500' : 'bg-gray-300'"></span>
+        </span>
+        正在执行的任务流程
+        <span v-if="running_count > 0" class="ml-auto text-xs font-normal text-indigo-500">{{ running_count }} 个运行中</span>
+      </div>
+      <div class="divide-y divide-gray-100" v-if="running.length > 0">
+        <a v-for="s in running" :key="s.workflow.uuid" :href="'/workflows/' + encodeURIComponent(s.workflow.uuid)" class="flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition">
+          <div>
+            <div class="font-medium text-gray-800">{{ s.workflow.name }}</div>
+            <div class="text-xs text-gray-400 mt-0.5">
+              开始于 {{ formatTime(s.started_at) }}
+              <template v-if="s.workflow.cron_expr"> · 定时 {{ s.workflow.cron_expr }}</template>
+            </div>
+            <div class="flex gap-1 mt-1">
+              <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div class="h-full bg-indigo-500 rounded-full transition-all" :style="{ width: taskPct(s) + '%' }"></div>
+              </div>
+              <span class="text-[10px] text-gray-400">{{ completedCount(s) }}/{{ taskCount(s) }}</span>
+            </div>
+          </div>
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">运行中</span>
+        </a>
+      </div>
+      <div v-else class="px-5 py-8 text-center text-gray-400 text-sm">暂无运行中的任务流程</div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200">
+      <div class="px-5 py-3 border-b border-gray-100 font-semibold text-gray-700">Worker 状态</div>
+      <div class="divide-y divide-gray-100" v-if="workers.length > 0">
+        <div v-for="w in workers" :key="w.worker_id" class="px-5 py-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-gray-800">{{ w.worker_id }}</div>
+              <div class="text-xs text-gray-400 mt-0.5">已注册 {{ (w.tasks || []).length }} 个任务</div>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full" :class="w.status === 'alive' ? 'bg-green-500' : 'bg-red-400'"></span>
+              <span class="text-xs" :class="w.status === 'alive' ? 'text-green-600' : 'text-red-500'">{{ w.status === 'alive' ? '在线' : '离线' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="px-5 py-8 text-center text-gray-400 text-sm">暂无 Worker 连接</div>
+    </div>
+  </div>
+</main>
+
+<script>
+const { createApp } = Vue;
+createApp({
+  data() {
+    return {
+      running_count: 0,
+      paused_count: 0,
+      completed_count: 0,
+      failed_count: 0,
+      alive_workers: 0,
+      total_workers: 0,
+      running: [],
+      workers: [],
+      wsConnected: false,
+      ws: null
+    };
+  },
+  mounted() {
+    this.load();
+    this.connectWS();
+  },
+  beforeUnmount() {
+    if (this.ws) this.ws.close();
+  },
+  methods: {
+    async load() {
+      try {
+        const res = await fetch('/api/v1/dashboard');
+        const json = await res.json();
+        if (json.code === 0 && json.data) {
+          Object.assign(this, json.data);
+        }
+      } catch (e) {
+        console.error('加载控制台数据失败', e);
+      }
+    },
+    connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = proto + '//' + location.host + '/ws';
+      this.ws = new WebSocket(wsUrl);
+      this.ws.onopen = () => { this.wsConnected = true; };
+      this.ws.onclose = () => { this.wsConnected = false; setTimeout(() => this.connectWS(), 3000); };
+      this.ws.onerror = () => { this.wsConnected = false; };
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          switch (msg.type) {
+            case 'task_completed':
+            case 'task_failed':
+            case 'task_rolled_back':
+              // 任务级事件：刷新运行列表以更新进度
+              this.load();
+              break;
+            case 'workflow_submitted':
+            case 'workflow_completed':
+            case 'workflow_failed':
+            case 'workflow_cancelled':
+            case 'workflow_paused':
+            case 'workflow_approved':
+            case 'workflow_rejected':
+            case 'workflow_rolling_back':
+            case 'workflow_rolled_back':
+              this.load();
+              break;
+          }
+        } catch (e) {}
+      };
+    },
+    formatTime(t) {
+      if (!t) return '-';
+      const d = new Date(t);
+      return d.getFullYear() + '-' +
+        String(d.getMonth()+1).padStart(2,'0') + '-' +
+        String(d.getDate()).padStart(2,'0') + ' ' +
+        String(d.getHours()).padStart(2,'0') + ':' +
+        String(d.getMinutes()).padStart(2,'0') + ':' +
+        String(d.getSeconds()).padStart(2,'0');
+    },
+    taskCount(s) {
+      const groups = s.workflow.task_groups || [];
+      let count = 0;
+      for (const g of groups) count += g.length;
+      return count;
+    },
+    completedCount(s) {
+      const groups = s.workflow.task_groups || [];
+      const completed = s.completed_tasks || {};
+      let count = 0;
+      for (const g of groups) {
+        for (const node of g) {
+          const name = node.name || node;
+          if (completed[name]) count++;
+        }
+      }
+      return count;
+    },
+    taskPct(s) {
+      const total = this.taskCount(s);
+      if (total === 0) return 0;
+      return Math.round(this.completedCount(s) / total * 100);
+    }
+  }
+}).mount('#app');
+</script>
+{%template "footer" .%}
+{%end%}
